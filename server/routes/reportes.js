@@ -185,4 +185,32 @@ router.get('/get-reporte-pendientes', async (req, res) => {
   }
 });
 
+router.get('/get-reporte-gasto', async (req, res) => {
+  const { mes, anio } = req.query;
+
+  // Validar que los parámetros mes y anio sean válidos
+  if (!mes || !anio) {
+    return res.status(400).json({ mensaje: 'Los parámetros mes y año son requeridos.' });
+  }
+
+  try {
+    // Construir fechas de inicio y fin del mes
+    const fechaInicial = moment(`${anio}-${mes}-01`, 'YYYY-MM');
+    const fechaFinal = fechaInicial.clone().endOf('month');
+
+    // Consultar facturas en ese rango de fechas y con estadoPrenda no anulado
+    const gastos = await Gasto.find({
+      fecha: {
+        $gte: fechaInicial.format('YYYY-MM-DD'),
+        $lte: fechaFinal.format('YYYY-MM-DD'),
+      },
+    });
+
+    res.json([...gastos]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ mensaje: 'No se pudo Generar reporte EXCEL' });
+  }
+});
+
 export default router;
