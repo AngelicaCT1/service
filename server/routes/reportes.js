@@ -1,5 +1,6 @@
 import express from 'express';
 import Factura from '../models/Factura.js';
+import Gasto from '../models/gastos.js';
 import moment from 'moment';
 import 'moment-timezone';
 import { reportePrendas } from '../utils/varsGlobal.js';
