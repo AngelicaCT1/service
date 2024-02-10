@@ -107,8 +107,14 @@ router.post('/add-factura', openingHours, async (req, res) => {
       }
     }
 
+    const dateCreation = {
+      fecha: moment().format('YYYY-MM-DD'),
+      hora: moment().format('HH:mm'),
+    };
+
     // Crear el nuevo registro con el índice asignado
     const nuevoDato = new Factura({
+      dateCreation,
       codRecibo,
       dateRecepcion,
       Modalidad,
@@ -146,7 +152,7 @@ router.post('/add-factura', openingHours, async (req, res) => {
     let newDelivery;
     if (Modalidad === 'Delivery' && modeRegistro === 'nuevo') {
       const { infoDelivery } = req.body;
-      const { name, descripcion, fecha, hora, monto } = infoDelivery;
+      const { name, descripcion, fecha, hora, monto, idUser, idCuadre } = infoDelivery;
 
       newDelivery = new Delivery({
         idCliente: facturaGuardada._id,
@@ -155,6 +161,8 @@ router.post('/add-factura', openingHours, async (req, res) => {
         fecha,
         hora,
         monto,
+        idUser,
+        idCuadre,
       });
 
       await newDelivery.save({ session: session });
@@ -245,6 +253,22 @@ router.get('/get-factura', (req, res) => {
   Factura.find()
     .then((facturas) => {
       res.json(facturas);
+    })
+    .catch((error) => {
+      console.error('Error al obtener los datos:', error);
+      res.status(500).json({ mensaje: 'Error al obtener los datos' });
+    });
+});
+
+router.get('/get-factura/:id', (req, res) => {
+  const { id } = req.params; // Obteniendo el id desde los parámetros de la URL
+  Factura.findById(id)
+    .then((factura) => {
+      if (factura) {
+        res.json(factura);
+      } else {
+        res.status(404).json({ mensaje: 'Factura no encontrada' });
+      }
     })
     .catch((error) => {
       console.error('Error al obtener los datos:', error);
@@ -471,7 +495,11 @@ router.put('/update-factura/:id', openingHours, async (req, res) => {
                 });
             }
 
-            if (orderUpdated.estadoPrenda === 'pendiente' && orderUpdated.Modalidad === 'Delivery') {
+            if (
+              orderUpdated.estadoPrenda === 'pendiente' &&
+              orderUpdated.Modalidad === 'Delivery' &&
+              orderToUpdate.modeRegistro !== 'antiguo'
+            ) {
               await Delivery.findOneAndUpdate(
                 { idCliente: facturaId },
                 { $set: { name: orderUpdated.Nombre } },
@@ -580,7 +608,7 @@ router.put('/update-factura/:id', openingHours, async (req, res) => {
               orderUpdated.estadoPrenda === 'entregado'
             ) {
               const { infoDelivery } = req.body;
-              const { name, descripcion, fecha, hora, monto } = infoDelivery;
+              const { name, descripcion, fecha, hora, monto, idCuadre, idUser } = infoDelivery;
 
               const nuevoDelivery = new Delivery({
                 idCliente: orderUpdated._id,
@@ -589,6 +617,8 @@ router.put('/update-factura/:id', openingHours, async (req, res) => {
                 fecha,
                 hora,
                 monto,
+                idCuadre,
+                idUser,
               });
 
               await nuevoDelivery
@@ -636,12 +666,13 @@ router.put('/update-factura/:id', openingHours, async (req, res) => {
   }
 });
 
-router.post('/cancel-entrega/:id', async (req, res) => {
+router.post('/cancel-entrega/:idFactura', async (req, res) => {
   const session = await db.startSession();
   session.startTransaction(); // Comienza una transacción
 
   try {
-    const facturaId = req.params.id;
+    const { modalidad } = req.body;
+    const facturaId = req.params.idFactura;
 
     // Obtener factura por ID
     const factura = await Factura.findById(facturaId);
@@ -649,19 +680,14 @@ router.post('/cancel-entrega/:id', async (req, res) => {
       return res.status(404).json({ error: 'Factura no encontrada' });
     }
 
+    let deliveryId;
     const fechaActual = moment().format('YYYY-MM-DD');
-    let idDeliveryDeleted;
-    if (factura.estadoPrenda === 'entregado' && factura.dateEntrega.fecha === fechaActual) {
-      if (factura.Modalidad === 'Delivery') {
-        // Buscar deliveries relacionados y eliminar los de devolución
 
-        const deliveries = await Delivery.find({ idCliente: factura._id }).session(session);
-        for (const delivery of deliveries) {
-          if (delivery.descripcion.includes('Devolucion') && delivery.fecha === factura.dateEntrega.fecha) {
-            idDeliveryDeleted = delivery._id;
-            await Delivery.findOneAndDelete({ _id: delivery._id }, { session: session });
-          }
-        }
+    if (factura.estadoPrenda === 'entregado' && factura.dateEntrega.fecha === fechaActual) {
+      if (modalidad === 'Delivery') {
+        const { IdDelivery } = req.body;
+        deliveryId = IdDelivery;
+        await Delivery.findByIdAndDelete(IdDelivery, { session: session });
       }
 
       // Actualizar cliente si tiene DNI
@@ -694,7 +720,7 @@ router.post('/cancel-entrega/:id', async (req, res) => {
 
       res.json({
         orderUpdate: orderUpdate.toObject(),
-        ...(idDeliveryDeleted && factura.Modalidad === 'Delivery' && { idDeliveryDeleted: idDeliveryDeleted }),
+        ...(deliveryId && factura.Modalidad === 'Delivery' && { idDeliveryDeleted: deliveryId }),
       });
       await session.commitTransaction();
     } else {
