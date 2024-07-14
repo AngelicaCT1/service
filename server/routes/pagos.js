@@ -8,14 +8,13 @@ import { handleGetInfoUser } from "./cuadreDiario.js";
 
 const router = express.Router();
 
-export const handleAddPago = async (nuevoPago) => {
+export const handleAddPago = async (nuevoPago, session) => {
   try {
     // Crea una instancia del modelo Pagos con los datos del nuevo pago
     const pagoNuevo = new Pagos(nuevoPago);
 
     // Guarda el nuevo pago en la base de datos
-    const pagoGuardado = await pagoNuevo.save();
-    await pagoNuevo.validate();
+    const pagoGuardado = await pagoNuevo.save({ session });
 
     // Devuelve el pago guardado
     return pagoGuardado;
@@ -38,27 +37,13 @@ export const handleGetPagosByIdOrden = async (idOrden) => {
   }
 };
 
-router.get("/get-pagos", async (req, res) => {
-  await Pagos.find()
-    .then((infoPagos) => {
-      res.json(infoPagos);
-    })
-    .catch((error) => {
-      console.error("Error al obtener los datos:", error);
-      res.status(500).json({ mensaje: "Error al obtener los datos" });
-    });
-});
-
 // Ruta para agregar un nuevo registro de pago
 router.post("/add-pago", async (req, res) => {
   const session = await db.startSession();
-  session.startTransaction(); // Comienza la transacción
+  session.startTransaction();
 
   try {
-    // Obtener los datos del cuerpo de la solicitud
     const { idOrden, date, metodoPago, total, idUser, isCounted } = req.body;
-
-    // Crear una instancia del modelo Pagos con los datos recibidos
     const nuevoPago = new Pagos({
       idOrden,
       date,
@@ -68,25 +53,20 @@ router.post("/add-pago", async (req, res) => {
       isCounted,
     });
 
-    // Validar los datos del nuevo pago
     await nuevoPago.validate();
-
-    // Guardar el nuevo pago en la base de datos dentro de la transacción
     const pagoGuardado = await nuevoPago.save({ session }, { _id: 1 });
 
     const facturaActualizada = await Factura.findByIdAndUpdate(
       idOrden,
       { $addToSet: { listPago: pagoGuardado._id } },
-      { new: true, select: "Modalidad Nombre codRecibo _id", session } // Pasar la sesión de transacción
+      { new: true, select: "Modalidad Nombre codRecibo _id", session }
     );
 
-    // Confirmar la transacción
     await session.commitTransaction();
 
-    // Finalizar la sesión
-    session.endSession();
+    // Obtén la información del usuario fuera de la transacción si es posible
+    const infoUser = await handleGetInfoUser(pagoGuardado.idUser);
 
-    // Enviar la respuesta al cliente con el pago guardado
     res.json({
       tipo: "added",
       info: {
@@ -100,17 +80,21 @@ router.post("/add-pago", async (req, res) => {
         metodoPago: pagoGuardado.metodoPago,
         Modalidad: facturaActualizada.Modalidad,
         isCounted: pagoGuardado.isCounted,
-        infoUser: await handleGetInfoUser(pagoGuardado.idUser),
+        infoUser: infoUser,
       },
     });
   } catch (error) {
     console.error("Error al editar el pago:", error);
-    await session.abortTransaction(); // Abortar la transacción en caso de error
-    session.endSession(); // Finalizar la sesión
-
+    try {
+      await session.abortTransaction();
+    } catch (abortError) {
+      console.error("Error al abortar la transacción:", abortError);
+    }
     res
       .status(500)
       .json({ mensaje: "Error al editar el pago", error: error.message });
+  } finally {
+    session.endSession();
   }
 });
 
