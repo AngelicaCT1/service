@@ -2,9 +2,6 @@ import express from "express";
 import Pagos from "../models/pagos.js";
 import Factura from "../models/Factura.js";
 import db from "../config/db.js";
-import { GetPagoMasDetalleOrden } from "../utils/utilsFuncion.js";
-
-import { handleGetInfoUser } from "./cuadreDiario.js";
 
 const router = express.Router();
 
@@ -17,7 +14,7 @@ export const handleAddPago = async (nuevoPago, session) => {
     const pagoGuardado = await pagoNuevo.save({ session });
 
     // Devuelve el pago guardado
-    return pagoGuardado;
+    return pagoGuardado.toObject();
   } catch (error) {
     console.error("Error al agregar pago:", error);
     throw error; // Puedes manejar el error según tus necesidades
@@ -53,43 +50,20 @@ router.post("/add-pago", async (req, res) => {
       isCounted,
     });
 
-    await nuevoPago.validate();
     const pagoGuardado = await nuevoPago.save({ session }, { _id: 1 });
 
-    const facturaActualizada = await Factura.findByIdAndUpdate(
+    await Factura.findByIdAndUpdate(
       idOrden,
       { $addToSet: { listPago: pagoGuardado._id } },
-      { new: true, select: "Modalidad Nombre codRecibo _id", session }
+      { session }
     );
 
     await session.commitTransaction();
 
-    // Obtén la información del usuario fuera de la transacción si es posible
-    const infoUser = await handleGetInfoUser(pagoGuardado.idUser);
-
-    res.json({
-      tipo: "added",
-      info: {
-        _id: pagoGuardado._id,
-        idUser: pagoGuardado.idUser,
-        orden: facturaActualizada.codRecibo,
-        idOrden: pagoGuardado.idOrden,
-        date: pagoGuardado.date,
-        nombre: facturaActualizada.Nombre,
-        total: pagoGuardado.total,
-        metodoPago: pagoGuardado.metodoPago,
-        Modalidad: facturaActualizada.Modalidad,
-        isCounted: pagoGuardado.isCounted,
-        infoUser: infoUser,
-      },
-    });
+    res.json(pagoGuardado.toObject());
   } catch (error) {
     console.error("Error al editar el pago:", error);
-    try {
-      await session.abortTransaction();
-    } catch (abortError) {
-      console.error("Error al abortar la transacción:", abortError);
-    }
+    await session.abortTransaction();
     res
       .status(500)
       .json({ mensaje: "Error al editar el pago", error: error.message });
@@ -126,10 +100,7 @@ router.put("/edit-pago/:idPago", async (req, res) => {
     }
 
     // Enviar la respuesta al cliente con el pago actualizado
-    res.json({
-      tipo: "updated",
-      info: await GetPagoMasDetalleOrden(pagoActualizado._id.toString()),
-    });
+    res.json(pagoActualizado.toObject());
   } catch (error) {
     console.error("Error al editar el pago:", error);
     res
@@ -156,33 +127,14 @@ router.delete("/delete-pago/:idPago", async (req, res) => {
     const facturaId = pagoEliminado.idOrden;
 
     // Actualizar la factura asociada eliminando el ID del pago de su lista de pagos
-    const facturaActualizada = await Factura.findByIdAndUpdate(
-      facturaId,
-      { $pull: { listPago: pagoEliminado._id } },
-      { new: true, select: "Modalidad Nombre codRecibo _id" }
-    );
+    await Factura.findByIdAndUpdate(facturaId, {
+      $pull: { listPago: pagoEliminado._id },
+    });
 
-    // Construir el objeto de respuesta con los datos del pago eliminado y los campos requeridos de la factura actualizada
-    const pagoToDelete = {
-      _id: idPago,
-      idUser: pagoEliminado.idUser,
-      orden: facturaActualizada.codRecibo,
-      idOrden: pagoEliminado.idOrden,
-      date: pagoEliminado.date,
-      nombre: facturaActualizada.Nombre,
-      total: pagoEliminado.total,
-      metodoPago: pagoEliminado.metodoPago,
-      Modalidad: facturaActualizada.Modalidad,
-      isCounted: pagoEliminado.isCounted,
-      infoUser: await handleGetInfoUser(pagoEliminado.idUser),
-    };
-
-    // Enviar la respuesta al cliente con el pago eliminado y los datos de la factura actualizada
-
-    // Enviar la respuesta al cliente con el pago eliminado
     res.json({
-      tipo: "deleted",
-      info: pagoToDelete,
+      _id: pagoEliminado._id,
+      idOrden: pagoEliminado.idOrden,
+      isCounted: pagoEliminado.isCounted,
     });
   } catch (error) {
     console.error("Error al eliminar el pago:", error);

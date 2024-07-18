@@ -68,9 +68,7 @@ io.on("connection", (socket) => {
   // UPDATE INFO EN ORDEN DE SERVICIO
   socket.on("client:updateOrder", (info) => {
     const { orderUpdated } = info;
-
     socket.broadcast.emit("server:orderUpdated", orderUpdated);
-    socket.broadcast.emit("server:orderUpdated:child", orderUpdated);
   });
 
   socket.on("client:updateOrder(ITEMS)", (info) => {
@@ -180,11 +178,11 @@ io.on("connection", (socket) => {
   });
 
   socket.on("client:cPago", (info) => {
-    io.emit("server:cPago", info);
+    socket.broadcast.emit("server:cPago", info);
   });
 
   socket.on("client:cClientes", (info) => {
-    io.emit("server:cClientes", info);
+    socket.broadcast.emit("server:cClientes", info);
   });
 
   // Maneja el evento cuando un cliente se desconecta

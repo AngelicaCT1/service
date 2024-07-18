@@ -14,9 +14,14 @@ import Producto from "../models/portafolio/productos.js";
 
 import Pagos from "../models/pagos.js";
 
-import { handleGetInfoDelivery, mapArrayByKey } from "../utils/utilsFuncion.js";
+import {
+  handleGetInfoDelivery,
+  mapArrayByKey,
+  mapObjectByKey,
+} from "../utils/utilsFuncion.js";
 import { handleAddPago } from "./pagos.js";
 import { handleAddGasto } from "./gastos.js";
+import Usuarios from "../models/usuarios/usuarios.js";
 
 const router = express.Router();
 
@@ -51,7 +56,7 @@ async function handleAddFactura(data, session) {
   let newOrden;
   let newCodigo;
   let newGasto;
-  let newPago = [];
+  let newPago;
 
   const fechaActual = moment().format("YYYY-MM-DD");
   const horaActual = moment().format("HH:mm");
@@ -124,12 +129,6 @@ async function handleAddFactura(data, session) {
     }
   }
 
-  // 5. ADD FACTURA (ORDEN DE SERVICIO)
-  const nuevoIndice =
-    ((
-      await Factura.findOne({}, { index: 1, _id: 0 }).sort({ index: -1 }).lean()
-    )?.index ?? 0) + 1;
-
   const dateCreation = {
     fecha: fechaActual,
     hora: horaActual,
@@ -143,6 +142,7 @@ async function handleAddFactura(data, session) {
     nuevoCodigo = codRecibo;
   }
 
+  // 5. ADD ORDEN DE SERVICIO
   const nuevoOrden = new Factura({
     codRecibo: nuevoCodigo,
     dateCreation,
@@ -159,7 +159,6 @@ async function handleAddFactura(data, session) {
     estadoPrenda: "pendiente",
     estado,
     listPago: [],
-    index: nuevoIndice,
     dni,
     subTotal,
     totalNeto,
@@ -178,18 +177,16 @@ async function handleAddFactura(data, session) {
   newOrden = await nuevoOrden.save({ session });
   newOrden = newOrden.toObject();
 
+  let nuevoPago;
   // 6. ADD PAGO
-  let ListPago = [];
   if (infoPago) {
-    const nuevoPago = await handleAddPago(
+    nuevoPago = await handleAddPago(
       {
         ...infoPago,
         idOrden: newOrden._id,
       },
       session
     );
-
-    ListPago.push(nuevoPago);
   }
 
   // 7. UPDATE CLIENTE
@@ -253,39 +250,27 @@ async function handleAddFactura(data, session) {
   }
 
   // 9. UPDATE "listPago" con los ids de los pagos en FACTURA
-  if (ListPago.length > 0) {
-    const idsPagos = ListPago.map((pago) => pago._id);
-
+  if (nuevoPago) {
     // Actualizar la newOrden con los nuevos ids de pago
-    newOrden = await Factura.findByIdAndUpdate(
+    await Factura.findByIdAndUpdate(
       newOrden._id,
-      { $addToSet: { listPago: { $each: idsPagos } } }, // Agregar los nuevos ids de pago al campo listPago
-      { new: true, session } // Opción new: true para obtener el documento actualizado
-    ).lean();
-
-    await Promise.all(
-      ListPago.map(async (pago) => {
-        const iPago = {
-          _id: pago._id,
-          idUser: pago.idUser,
-          orden: newOrden.codRecibo,
-          idOrden: pago.idOrden,
-          date: pago.date,
-          nombre: newOrden.Nombre,
-          total: pago.total,
-          metodoPago: pago.metodoPago,
-          Modalidad: newOrden.Modalidad,
-          isCounted: pago.isCounted,
-        };
-        newPago.push(iPago);
-      })
+      { $set: { listPago: [nuevoPago._id] } },
+      { session }
     );
+
+    newPago = {
+      ...nuevoPago,
+      codRecibo: newOrden.codRecibo,
+      Nombre: newOrden.Nombre,
+      Modalidad: newOrden.Modalidad,
+    };
   }
 
   return {
     newOrder: {
       ...newOrden,
-      ListPago,
+      listPago: newPago ? [newPago._id] : [],
+      ListPago: newPago ? [newPago] : [],
     },
     newPago,
     newGasto,
@@ -305,16 +290,14 @@ router.post("/add-factura", openingHours, async (req, res) => {
     await session.commitTransaction();
     res.json({
       newOrder,
-      ...(newPago.length > 0 && { listNewsPagos: newPago }),
+      ...(newPago && { newPago }),
       ...(newGasto && { newGasto }),
       ...(infoCliente && { changeCliente: infoCliente }),
       ...(newCodigo && { newCodigo: newCodigo.codActual }),
     });
   } catch (error) {
     console.error("Error al guardar los datos:", error);
-    if (session.inTransaction()) {
-      await session.abortTransaction();
-    }
+    await session.abortTransaction();
     res.status(500).json({ mensaje: "Error al guardar los datos" });
   } finally {
     session.endSession();
@@ -352,21 +335,50 @@ router.get("/get-factura/:id", (req, res) => {
 const handleGetInfoDetallada = async (ordenes) => {
   // Obtener todos los IDs de pagos y donaciones relevantes
   const idsPagos = ordenes.flatMap((orden) => orden.listPago);
-  const idsDonaciones = ordenes
-    .filter((orden) => orden.location === 3)
-    .map((orden) => orden._id);
 
-  // Consultar todos los pagos y donaciones relevantes
+  // Consultar todos los pagos
   const pagos = await Pagos.find({ _id: { $in: idsPagos } }).lean();
+
+  // Obtener todos los IDs de usuarios únicos de los pagos
+  const idUsers = [...new Set(pagos.map((pago) => pago.idUser))];
+
+  // Buscar la información de los usuarios relacionados con los idUsers
+  const usuarios = await Usuarios.find(
+    { _id: { $in: idUsers } },
+    {
+      _id: 1,
+      name: 1,
+      usuario: 1,
+      rol: 1,
+    }
+  ).lean();
+
+  // Crear un mapa de usuarios por su _id
+  const usuariosMap = mapObjectByKey(usuarios, "_id");
 
   // Crear un mapa de pagos por ID de orden para un acceso más rápido
   const pagosPorOrden = mapArrayByKey(pagos, "idOrden");
 
   // Procesar cada orden de factura
-  const resultados = ordenes.map((orden) => ({
-    ...orden,
-    ListPago: pagosPorOrden[orden._id] || [],
-  }));
+  const resultados = ordenes.map((orden) => {
+    // Obtener los pagos asociados a la orden actual
+    const pagosAsociados = pagosPorOrden[orden._id] || [];
+
+    // Mapear cada pago asociado para agregar la información del usuario y detalles de la orden
+    const pagosConInfo = pagosAsociados.map((pago) => ({
+      infoUser: usuariosMap[pago.idUser],
+      codRecibo: orden.codRecibo,
+      Nombre: orden.Nombre,
+      Modalidad: orden.Modalidad,
+      ...pago,
+    }));
+
+    // Devolver la orden con la lista de pagos enriquecida
+    return {
+      ...orden,
+      ListPago: pagosConInfo,
+    };
+  });
 
   return resultados;
 };
@@ -613,8 +625,7 @@ router.put(
       } = infoOrden;
 
       let infoCliente;
-      let orderUpdated;
-      let newPago = [];
+      let newPago;
 
       const fechaActual = moment().format("YYYY-MM-DD");
       const horaActual = moment().format("HH:mm");
@@ -718,32 +729,25 @@ router.put(
       }
 
       // 4. ADD PAGO
-      let ListPago = []; // Info de Pagos con informacion completa
-      let listPago = []; // Info de IDs de Pagos
 
+      let nuevoPago;
       if (infoPago) {
-        const nuevoPago = await handleAddPago({
-          ...infoPago,
-          idOrden: facturaId,
-        });
-
-        ListPago.push(nuevoPago);
+        nuevoPago = await handleAddPago(
+          {
+            ...infoPago,
+            idOrden: facturaId,
+          },
+          session
+        );
       }
 
-      if (ListPago.length > 0) {
-        newPago = ListPago.map((pago) => ({
-          _id: pago._id,
-          idUser: pago.idUser,
-          orden: codRecibo,
-          idOrden: pago.idOrden,
-          date: pago.date,
-          nombre: Nombre,
-          total: pago.total,
-          metodoPago: pago.metodoPago,
+      if (nuevoPago) {
+        newPago = {
+          ...nuevoPago,
+          codRecibo: codRecibo,
+          Nombre: Nombre,
           Modalidad: Modalidad,
-          isCounted: pago.isCounted,
-        }));
-        listPago = ListPago.map((pago) => pago._id);
+        };
       }
 
       // 5. UPDATE FACTURA (ORDEN DE SERVICIO)
@@ -757,7 +761,7 @@ router.put(
         datePrevista,
         descuento,
         estado: "registrado",
-        listPago,
+        listPago: newPago ? [newPago._id] : [],
         dni,
         subTotal,
         totalNeto,
@@ -768,7 +772,7 @@ router.put(
         attendedBy,
       };
 
-      orderUpdated = await Factura.findByIdAndUpdate(
+      const orderUpdated = await Factura.findByIdAndUpdate(
         facturaId,
         { $set: infoToUpdate },
         { new: true, session }
@@ -779,16 +783,14 @@ router.put(
       res.json({
         orderUpdated: {
           ...orderUpdated,
-          ListPago,
+          ListPago: newPago ? [newPago] : [],
         },
-        ...(newPago.length > 0 && { listNewsPagos: newPago }),
+        ...(newPago && { newPago }),
         ...(infoCliente && { changeCliente: infoCliente }),
       });
     } catch (error) {
       console.error("Error al actualizar los datos de la orden:", error);
-      if (session.inTransaction()) {
-        await session.abortTransaction();
-      }
+      await session.abortTransaction();
       res
         .status(500)
         .json({ mensaje: "Error al actualizar los datos de la orden" });
@@ -1244,9 +1246,8 @@ router.post("/anular-to-replace", async (req, res) => {
     });
   } catch (error) {
     console.error("Error al guardar los datos:", error);
-    if (session.inTransaction()) {
-      await session.abortTransaction();
-    }
+    await session.abortTransaction();
+
     res.status(500).json({ mensaje: "Error al guardar los datos" });
   } finally {
     session.endSession();
